@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-generate_random_skip.py
+generate_skip_small.py
+
+This is the file used to generate the data used for NeRF Inpainting.
 
 Generate Points2NeRF-style training data (with depth) from Seg2Tunnel point clouds
 using GLOBAL (full-scene) rendering mode and RANDOM sampling.
@@ -9,6 +11,10 @@ Modifications:
   - Uses strictly RANDOM sampling (no adaptive/curvature logic).
   - Skips files with fewer points than --num_points.
   - Logs skipped files to 'skipped_files.xlsx'.
+
+Camera and projection helpers are imported from preprocessing/src/.
+Default hyperparameters come from preprocessing/configs/default.json
+(override the path with --config; override individual values with their CLI flags).
 
 Input:
   - Directory containing .txt files, each with 5 columns: x y z intensity label
@@ -26,153 +32,33 @@ Outputs (inside --output_dir):
   - skipped_files.xlsx (list of files skipped due to insufficient points)
 """
 
+import sys
+from pathlib import Path
+
+# Make `src.*` importable when this script is run directly:
+# scripts/ and src/ are siblings under preprocessing/, so prepend the parent.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import argparse
 import json
 import math
 import hashlib
-from pathlib import Path
-from typing import Tuple, List, Optional
+from typing import List, Optional
 
 import numpy as np
 from PIL import Image
 from openpyxl import Workbook
 
-
-# ------------------------------
-# Sphere sampling for viewpoints
-# ------------------------------
-def random_sphere(n: int, rng: np.random.Generator) -> np.ndarray:
-    u = rng.random(n, dtype=np.float32)
-    v = rng.random(n, dtype=np.float32)
-    theta = 2.0 * math.pi * u
-    z = 2.0 * v - 1.0
-    r = np.sqrt(np.maximum(0.0, 1.0 - z * z))
-    x = r * np.cos(theta)
-    y = r * np.sin(theta)
-    return np.stack([x, y, z], axis=1).astype(np.float32)
+from src.camera import random_sphere, look_at_c2w
+from src.projection import load_txt_point_cloud, project_points_fullscene
 
 
-# --------------------------------------
-# Virtual camera + full-scene projection
-# --------------------------------------
-def look_at_c2w(
-    origin: np.ndarray,
-    target: np.ndarray,
-    up_hint: np.ndarray = np.array([0, 1, 0], dtype=np.float32),
-) -> np.ndarray:
-    """
-    Construct camera-to-world transform matrix.
-    """
-    origin = origin.astype(np.float32)
-    target = target.astype(np.float32)
-    up_hint = up_hint.astype(np.float32)
-
-    forward = target - origin
-    f = forward / (np.linalg.norm(forward) + 1e-8)
-
-    r = np.cross(f, up_hint)
-    r_norm = np.linalg.norm(r)
-    if r_norm < 1e-6:
-        up_hint = np.array([0, 0, 1], dtype=np.float32)
-        r = np.cross(f, up_hint)
-        r_norm = np.linalg.norm(r)
-        if r_norm < 1e-6:
-            up_hint = np.array([1, 0, 0], dtype=np.float32)
-            r = np.cross(f, up_hint)
-            r_norm = np.linalg.norm(r)
-    r = r / (r_norm + 1e-8)
-
-    u = np.cross(r, f)
-    r = r / (np.linalg.norm(r) + 1e-8)
-    u = u / (np.linalg.norm(u) + 1e-8)
-    f = f / (np.linalg.norm(f) + 1e-8)
-
-    c2w = np.eye(4, dtype=np.float32)
-    c2w[0:3, 0] = r
-    c2w[0:3, 1] = u
-    c2w[0:3, 2] = -f
-    c2w[0:3, 3] = origin
-    return c2w
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "configs" / "default.json"
 
 
-def project_points_fullscene(
-    pts: np.ndarray,
-    intens: np.ndarray,
-    c2w: np.ndarray,
-    fx: float,
-    fy: float,
-    cx: float,
-    cy: float,
-    img_w: int,
-    img_h: int,
-    depth_clip: Tuple[float, float] = (0.0, 1000.0),
-):
-    """
-    Project the entire point cloud into the image plane with a Z-buffer.
-    """
-    w2c = np.linalg.inv(c2w)
-    Pw = np.concatenate([pts, np.ones((pts.shape[0], 1), dtype=pts.dtype)], axis=1)
-    Pc = (w2c @ Pw.T).T[:, :3]
-    z = -Pc[:, 2]
-    valid = z > 1e-4
-    if not np.any(valid):
-        rgb = np.zeros((img_h, img_w), dtype=np.uint8)
-        depth = np.zeros((img_h, img_w), dtype=np.uint16)
-        hit = np.zeros((img_h, img_w), dtype=bool)
-        return rgb, depth, hit
-
-    Pc = Pc[valid]
-    z = z[valid]
-    I = intens[valid]
-
-    u = fx * (Pc[:, 0] / z) + cx
-    v = -fy * (Pc[:, 1] / z) + cy
-
-    ui = np.round(u).astype(np.int32)
-    vi = np.round(v).astype(np.int32)
-    in_img = (ui >= 0) & (ui < img_w) & (vi >= 0) & (vi < img_h)
-    if not np.any(in_img):
-        rgb = np.zeros((img_h, img_w), dtype=np.uint8)
-        depth = np.zeros((img_h, img_w), dtype=np.uint16)
-        hit = np.zeros((img_h, img_w), dtype=bool)
-        return rgb, depth, hit
-
-    ui = ui[in_img]
-    vi = vi[in_img]
-    z = z[in_img]
-    I = I[in_img]
-
-    I_clamped = np.clip(I, 0.0, 1.0)
-    Iu8 = np.round(I_clamped * 255.0).astype(np.uint8)
-
-    H, W = img_h, img_w
-    rgb = np.zeros((H, W), dtype=np.uint8)
-    depth = np.zeros((H, W), dtype=np.uint16)
-    hit = np.zeros((H, W), dtype=bool)
-
-    zmin, zmax = depth_clip
-    for px, py, pz, val in zip(ui, vi, z, Iu8):
-        if not (zmin <= pz <= zmax):
-            continue
-        if (not hit[py, px]) or pz < (depth[py, px] / 1000.0):
-            hit[py, px] = True
-            rgb[py, px] = val
-            depth[py, px] = int(np.clip(round(pz * 1000.0), 0, 65535))  # mm
-
-    return rgb, depth, hit
-
-
-# ---------------------------
-# IO: read Seg2Tunnel .txt
-# ---------------------------
-def load_txt_point_cloud(path: Path):
-    arr = np.loadtxt(str(path), dtype=np.float32)
-    if arr.shape[1] != 5:
-        raise ValueError(f"{path} must have 5 columns: x y z intensity label")
-    pts = arr[:, :3].astype(np.float32)
-    intensity = arr[:, 3].astype(np.float32)
-    label = arr[:, 4].astype(np.int32)
-    return pts, intensity, label
+def _load_config(path: Path) -> dict:
+    with open(path) as f:
+        return json.load(f)
 
 
 # ---------------------------
@@ -200,7 +86,7 @@ def process_scene_global(
     Returns center_raw (np.ndarray) if successful.
     Returns None if the file was skipped (too few points).
     """
-    
+
     # Load & concatenate all point clouds in this folder
     pts_list, intens_list, labels_list = [], [], []
     for p in txt_paths:
@@ -374,7 +260,7 @@ def process_scene_global(
 
             inten_out = intens_norm[idx] if txt_int_mode == "normalized" else intens[idx]
             lab_out = labels[idx].astype(np.float32)
-            
+
             out_arr = np.column_stack([xyz_out, inten_out, lab_out]).astype(np.float32)
 
             np.savetxt(
@@ -402,7 +288,7 @@ def process_scene_global(
         )
 
         print(f"Saved Points2NeRF dataset variant {variant_idx} to {npz_path}")
-    
+
     return center_raw
 
 
@@ -410,93 +296,51 @@ def process_scene_global(
 # CLI
 # ---------------------------
 def parse_args():
+    # Pre-parse only --config so we know which JSON to load before building the real parser.
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    pre_args, _ = pre.parse_known_args()
+
+    cfg = _load_config(pre_args.config)
+
     ap = argparse.ArgumentParser(
         description="Generate Points2NeRF-style RGBD dataset using RANDOM sampling and skipping small files."
     )
     ap.add_argument(
-        "--input_dir",
-        type=str, 
-        default="/mnt/c/Users/zy349/Documents/Points2NeRF/Seg2Tunnel/T2",
-        help="Directory with .txt point clouds.",
+        "--config", type=Path, default=DEFAULT_CONFIG_PATH,
+        help="Path to a JSON config providing defaults for most flags. Defaults to preprocessing/configs/default.json.",
     )
-    ap.add_argument(
-        "--output_dir",
-        type=str,
-        default="/mnt/c/Users/zy349/Documents/Points2NeRF/Seg2Tunnel_RS/T2",
-        help="Output directory.",
-    )
-    ap.add_argument(
-        "--num_views",
-        type=int,
-        default=50,
-        help="Number of virtual camera views.",
-    )
-    ap.add_argument(
-        "--img_hw",
-        type=int,
-        nargs=2,
-        default=[650, 650],
-        help="Image height and width.",
-    )
-    ap.add_argument(
-        "--fov",
-        type=float,
-        default=0.6911112070083618,
-        help="Horizontal FOV in radians.",
-    )
-    ap.add_argument(
-        "--radius_scale",
-        type=float,
-        default=0.85,
-        help="Distance margin factor.",
-    )
-    ap.add_argument(
-        "--num_points",
-        type=int,
-        default=230000,
-        help="Required points. If file has less, it is SKIPPED.",
-    )
-    ap.add_argument(
-        "--seed",
-        type=int,
-        default=0,
-        help="Random seed.",
-    )
-    ap.add_argument(
-        "--no_pngs",
-        action="store_true",
-        help="Do NOT write debug PNGs, only .npz.",
-    )
-    ap.add_argument(
-        "--num_variants",
-        type=int,
-        default=8,
-        help="Number of random downsampled variants per file.",
-    )
-    ap.add_argument(
-        "--save_downsampled_txt",
-        action="store_true",
-        default=True,
-        help="Save downsampled TXT files.",
-    )
-    ap.add_argument(
-        "--downsampled_txt_dir",
-        type=str,
-        default=None,
-        help="Custom dir for downsampled TXT files.",
-    )
-    ap.add_argument(
-        "--txt_intensity",
-        choices=["raw", "normalized"],
-        default="raw",
-        help="TXT output intensity mode.",
-    )
-    ap.add_argument(
-        "--txt_coords",
-        choices=["centered", "raw"],
-        default="centered",
-        help="TXT output coordinate mode.",
-    )
+    ap.add_argument("--input_dir",    type=str,   default=cfg["input_dir"],
+                    help="Directory with .txt point clouds.")
+    ap.add_argument("--output_dir",   type=str,   default=cfg["output_dir"],
+                    help="Output directory.")
+    ap.add_argument("--num_views",    type=int,   default=cfg["num_views"],
+                    help="Number of virtual camera views.")
+    ap.add_argument("--img_hw",       type=int,   nargs=2,
+                    default=[cfg["img_h"], cfg["img_w"]],
+                    help="Image height and width.")
+    ap.add_argument("--fov",          type=float, default=cfg["fov_x_radians"],
+                    help="Horizontal FOV in radians.")
+    ap.add_argument("--radius_scale", type=float, default=cfg["radius_scale"],
+                    help="Distance margin factor.")
+    ap.add_argument("--num_points",   type=int,   default=cfg["num_points"],
+                    help="Required points. If file has less, it is SKIPPED.")
+    ap.add_argument("--seed",         type=int,   default=cfg["seed"],
+                    help="Random seed.")
+    ap.add_argument("--num_variants", type=int,   default=cfg["num_variants"],
+                    help="Number of random downsampled variants per file.")
+
+    # Script-specific knobs not in default.json — keep CLI-only.
+    ap.add_argument("--no_pngs", action="store_true",
+                    help="Do NOT write debug PNGs, only .npz.")
+    ap.add_argument("--save_downsampled_txt", action="store_true", default=True,
+                    help="Save downsampled TXT files.")
+    ap.add_argument("--downsampled_txt_dir", type=str, default=None,
+                    help="Custom dir for downsampled TXT files.")
+    ap.add_argument("--txt_intensity", choices=["raw", "normalized"], default="raw",
+                    help="TXT output intensity mode.")
+    ap.add_argument("--txt_coords", choices=["centered", "raw"], default="centered",
+                    help="TXT output coordinate mode.")
     return ap.parse_args()
 
 
