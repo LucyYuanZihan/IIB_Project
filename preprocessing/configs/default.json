@@ -1,0 +1,23 @@
+{
+    "_comment": "Default preprocessing config for the dataset-generation scripts.",
+    "input_dir": "/home/zy349/Project/data",
+    "output_dir": "/home/zy349/Project/data/p2n_dataset",
+    "num_views": 50,
+    "img_h": 650,
+    "img_w": 650,
+    "fov_x_radians": 0.6911112070083618,
+    "radius_scale": 0.85,
+    "num_points": 8192,
+    "seed": 0,
+    "num_variants": 8,
+    "splits": {
+        "train_ratio": 0.8,
+        "val_ratio": 0.1,
+        "test_ratio": 0.1,
+        "shuffle_seed": 42
+    },
+    "intensity_normalisation": {
+        "low_percentile": 1,
+        "high_percentile": 99
+    }
+}

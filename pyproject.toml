@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tunnel-inpainting"
+version = "0.1.0"
+description = "Tunnel point-cloud inpainting via points-to-NeRF, with a frozen-Seg2Lining semantic evaluator."
+requires-python = ">=3.9"
+dependencies = [
+    # Shared
+    "numpy>=1.21",
+    "pandas>=1.3",
+    "tqdm>=4.45",
+    "matplotlib>=3.4",
+    "scikit-learn>=1.0",
+    "scipy>=1.7",
+    "Pillow>=9.0",
+    "PyYAML>=5.4",
+]
+
+[project.optional-dependencies]
+inpainter = [
+    # Deep learning + NeRF stack
+    "torch",
+    "torchvision",
+    "hypnettorch==0.0.3",
+    "open3d>=0.14",
+    "trimesh",
+    "PyMCubes",
+    "imageio",
+    "imageio-ffmpeg",
+    "ninja",
+    "mlflow",
+]
+preprocessing = [
+    "open3d>=0.14",
+    "openpyxl",
+    "scipy",
+]
+evaluator = [
+    "torch",
+    "tensorboard",
+    "thop",
+    "openpyxl",
+    # Optional GUI / visualisation
+    "vispy>=0.5",
+    "PyOpenGL>=3.1",
+    "pyqt5",
+]
+
+[tool.setuptools]
+packages = []

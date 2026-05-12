@@ -1,0 +1,67 @@
+# ─── Python bytecode and packaging ────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ─── Compiled extensions ──────────────────────────────────────────
+*.so
+*.pyd
+*.dll
+
+# ─── Virtual envs / package managers ──────────────────────────────
+.venv/
+venv/
+env/
+.conda/
+.python-version
+
+# ─── ML run trackers (created at runtime by trainers) ─────────────
+mlruns/
+wandb/
+runs/
+tb_logs/
+tensorboard_logs/
+lightning_logs/
+
+# ─── Runtime output dirs created next to scripts ──────────────────
+# (eval_chamfer.py / inpaint.py create these from config['results_dir'])
+**/results/
+**/checkpoints/
+**/logs/
+
+# ─── Model checkpoints / large binaries / cached arrays ───────────
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.npz
+*.npy
+*.pkl
+*.ply
+*.obj
+*.h5
+*.zip
+*.tar
+*.tar.gz
+
+# ─── Logs & misc ──────────────────────────────────────────────────
+*.log
+nohup.out
+
+# ─── Editor / OS ──────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*.Zone.Identifier
