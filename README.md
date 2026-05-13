@@ -94,6 +94,4 @@ ln -sfn ../../p2n_results inpainter/experiments
 - Configs are JSON for the inpainter and Python modules for the evaluator (the latter contain runtime branching that JSON can't express).
 - The `data/` directory is a symlink — never modify its contents through this tree.
 
-## Out of scope
 
-The original repository also contained a SAM-style 3D interactive segmentation strand (`SNAP/`, `SNAP_new/`) and an HPC fork (`Seg2Lining_wanru/`). These are not part of the inpainting pipeline and are not included in this tree.
